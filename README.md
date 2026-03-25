@@ -73,10 +73,10 @@ The KQL query is intended for Log Analytics or Sentinel-style investigation of w
 
 It checks:
 
-- `AADServicePrincipalSignInLogs` for app or service principal activity
+- `AADServicePrincipalSignInLogs` as the primary source for ACS and app/service principal token activity
 - `AADNonInteractiveUserSignInLogs` for delegated workflow-related activity
 
-The query groups activity over a configurable lookback period, then labels each app as recent, ageing, dormant, or inactive so you can prioritise remediation.
+The query uses a mix of name hints and SharePoint resource hints, then groups activity over a configurable lookback period and labels each app as recent, ageing, dormant, or inactive so you can prioritise remediation.
 
 ## Suggested workflow
 

@@ -1,21 +1,38 @@
-// Workflow app registration activity — ACS and service principal sign-ins
-// Covers both interactive delegation and app-only ACS token issuance
+// Workflow-related activity — preserve ACS/service principal token coverage
+// Uses AADServicePrincipalSignInLogs as the primary source for app-only ACS activity
+// and AADNonInteractiveUserSignInLogs as supplemental delegated-flow evidence.
 let lookbackDays = 90;
-let workflowApps = 
+let nameHints = dynamic(["Workflow", "SharePoint", "App@SharePoint"]);
+let acsResourceHints = dynamic(["SharePoint", "Office 365 SharePoint Online"]);
+let workflowServicePrincipalActivity =
     AADServicePrincipalSignInLogs
     | where TimeGenerated > ago(lookbackDays * 1d)
-    | where ServicePrincipalName startswith "Workflow" 
-        or ServicePrincipalName == "Workflow"
+    | extend NameMatched =
+        tostring(ServicePrincipalName) has_any (nameHints)
+        or tostring(AppDisplayName) has_any (nameHints)
+    | extend ResourceMatched =
+        tostring(ResourceDisplayName) has_any (acsResourceHints)
+    | where NameMatched or ResourceMatched
     | summarize
         LastSignIn        = max(TimeGenerated),
         SignInCount       = count(),
         UniqueResources   = dcount(ResourceDisplayName),
         Resources         = make_set(ResourceDisplayName, 10),
         UniqueIPs         = dcount(IPAddress),
-        ErrorCodes        = make_set(ResultType, 5)
+        ErrorCodes        = make_set(ResultType, 5),
+        MatchReasons      = make_set(
+                                case(
+                                    NameMatched and ResourceMatched, "Name + resource hint",
+                                    NameMatched,                    "Name hint",
+                                    ResourceMatched,                "ACS resource hint",
+                                                                    "Other"
+                                ),
+                                5
+                            )
       by
         ServicePrincipalId,
         ServicePrincipalName,
+        AppDisplayName,
         AppId
     | extend DaysSinceLastSignIn = datetime_diff("day", now(), LastSignIn)
     | extend ActivityStatus = case(
@@ -24,24 +41,26 @@ let workflowApps =
         DaysSinceLastSignIn <= 180, "Dormant",
         "Inactive / never seen"
     );
-// Also check the non-interactive user sign-in logs (delegated flows)
+// Also check the non-interactive user sign-in logs for delegated flows tied to the same AppIds
 let workflowDelegated =
     AADNonInteractiveUserSignInLogs
     | where TimeGenerated > ago(lookbackDays * 1d)
-    | where AppDisplayName startswith "Workflow"
-        or AppId in (workflowApps | project AppId)
+    | where tostring(AppDisplayName) has_any (nameHints)
+        or AppId in (workflowServicePrincipalActivity | where isnotempty(AppId) | project AppId)
     | summarize
         LastDelegatedSignIn = max(TimeGenerated),
         DelegatedCount      = count(),
         UniqueUsers         = dcount(UserId)
       by AppId;
 // Join and emit final result
-workflowApps
+workflowServicePrincipalActivity
 | join kind=leftouter workflowDelegated on AppId
 | project
     ServicePrincipalName,
+    AppDisplayName,
     AppId,
     ServicePrincipalId,
+    MatchReasons,
     ActivityStatus,
     DaysSinceLastSignIn,
     LastSignIn,
@@ -53,4 +72,4 @@ workflowApps
     Resources,
     UniqueIPs,
     ErrorCodes
-| sort by DaysSinceLastSignIn asc
+| sort by DaysSinceLastSignIn asc nulls last

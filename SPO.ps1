@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Inventories all "Workflow" app registrations in Entra ID.
-    Classifies by credential status, owner presence, and SP existence.
+    Classifies by credential status, owner presence, and service principal presence.
 
 .NOTES
     Required scopes: Application.Read.All, Directory.Read.All
@@ -51,7 +51,12 @@ function Invoke-GraphCollection {
             $items.Add($item)
         }
 
-        $nextUri = $response.'@odata.nextLink'
+        $nextLinkProperty = $response.PSObject.Properties['@odata.nextLink']
+        if ($nextLinkProperty) {
+            $nextUri = $nextLinkProperty.Value
+        } else {
+            $nextUri = $null
+        }
     }
 
     return ,([object[]]$items.ToArray())
@@ -65,21 +70,33 @@ if (-not $SkipConnect) {
 }
 
 # ── Retrieve all "Workflow" app registrations ─────────────────────────────────
-Write-Host "Querying app registrations with names starting '$NamePrefix'..." -ForegroundColor Cyan
+Write-Host "Querying app registrations and service principals with names starting '$NamePrefix'..." -ForegroundColor Cyan
 
 # Graph filter — picks up exact match and prefixed variants
 $escapedPrefix = $NamePrefix.Replace("'", "''")
 $apps = Invoke-GraphCollection `
     -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=startswith(displayName,'$escapedPrefix')&`$select=id,appId,displayName,createdDateTime,passwordCredentials,keyCredentials&`$top=999" `
     -Headers @{ ConsistencyLevel = "eventual" }
+$servicePrincipals = Invoke-GraphCollection `
+    -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=startswith(displayName,'$escapedPrefix')&`$select=id,appId,displayName,accountEnabled,tags,servicePrincipalType,createdDateTime&`$top=999" `
+    -Headers @{ ConsistencyLevel = "eventual" }
+
 $appCount = $apps.Count
+$servicePrincipalCount = $servicePrincipals.Count
 
-Write-Host "  Found $appCount app registrations." -ForegroundColor Gray
+$servicePrincipalByAppId = @{}
+foreach ($servicePrincipal in $servicePrincipals) {
+    if ($servicePrincipal.appId -and -not $servicePrincipalByAppId.ContainsKey($servicePrincipal.appId)) {
+        $servicePrincipalByAppId[$servicePrincipal.appId] = $servicePrincipal
+    }
+}
 
-if ($appCount -eq 0) {
+Write-Host "  Found $appCount app registrations and $servicePrincipalCount service principals." -ForegroundColor Gray
+
+if (($appCount + $servicePrincipalCount) -eq 0) {
     $results = [System.Collections.Generic.List[PSCustomObject]]::new()
     $results | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
-    Write-Host "No matching app registrations found. Exported an empty CSV to: $ExportPath" -ForegroundColor Yellow
+    Write-Host "No matching app registrations or service principals found. Exported an empty CSV to: $ExportPath" -ForegroundColor Yellow
     return
 }
 
@@ -87,6 +104,7 @@ if ($appCount -eq 0) {
 $now    = Get-Date
 $cutoff = $now.AddDays(-180)
 $results = [System.Collections.Generic.List[PSCustomObject]]::new()
+$appIdsSeen = [System.Collections.Generic.HashSet[string]]::new()
 
 $i = 0
 foreach ($app in $apps) {
@@ -94,6 +112,10 @@ foreach ($app in $apps) {
     Write-Progress -Activity "Processing app registrations" `
                    -Status "$i / $appCount  — $($app.displayName)" `
                    -PercentComplete (($i / $appCount) * 100)
+
+    if ($app.appId) {
+        [void]$appIdsSeen.Add($app.appId)
+    }
 
     # ── Credentials ──────────────────────────────────────────────────────────
     $secrets = ConvertTo-Array $app.passwordCredentials
@@ -134,13 +156,10 @@ foreach ($app in $apps) {
     # ── Service principal ─────────────────────────────────────────────────────
     $sp = $null
     $spEnabled = $null
-    try {
-        $spResp = Invoke-MgGraphRequest -Method GET `
-            -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '$($app.appId)'&`$select=id,accountEnabled,tags,servicePrincipalType" `
-            -ErrorAction SilentlyContinue
-        $sp = ConvertTo-Array $spResp.value | Select-Object -First 1
-        if ($sp) { $spEnabled = $sp.accountEnabled }
-    } catch { <# tolerate #> }
+    if ($app.appId -and $servicePrincipalByAppId.ContainsKey($app.appId)) {
+        $sp = $servicePrincipalByAppId[$app.appId]
+        $spEnabled = $sp.accountEnabled
+    }
 
     # ── Age classification ────────────────────────────────────────────────────
     $createdDate    = [datetime]$app.createdDateTime
@@ -155,9 +174,11 @@ foreach ($app in $apps) {
     }
 
     $results.Add([PSCustomObject]@{
+        RecordType          = "Application"
         DisplayName         = $app.displayName
         AppId               = $app.appId
         ObjectId            = $app.id
+        AppRegistrationExists = $true
         CreatedDate         = $createdDate.ToString("yyyy-MM-dd")
         AgeClassification   = $ageClassification
         CredentialStatus    = $credStatus
@@ -171,6 +192,34 @@ foreach ($app in $apps) {
 }
 
 Write-Progress -Activity "Processing app registrations" -Completed
+
+foreach ($sp in $servicePrincipals) {
+    if ($sp.appId -and $appIdsSeen.Contains($sp.appId)) {
+        continue
+    }
+
+    $createdDate = $null
+    if ($sp.createdDateTime) {
+        $createdDate = [datetime]$sp.createdDateTime
+    }
+
+    $results.Add([PSCustomObject]@{
+        RecordType            = "ServicePrincipalOnly"
+        DisplayName           = $sp.displayName
+        AppId                 = $sp.appId
+        ObjectId              = $sp.id
+        AppRegistrationExists = $false
+        CreatedDate           = if ($createdDate) { $createdDate.ToString("yyyy-MM-dd") } else { "" }
+        AgeClassification     = if ($createdDate) { if ($createdDate -lt $cutoff) { "Legacy (>180 days)" } else { "Recent (<180 days)" } } else { "Unknown" }
+        CredentialStatus      = "Unknown (service principal only)"
+        SoonestExpiry         = ""
+        OwnerCount            = ""
+        SPExists              = $true
+        SPEnabled             = $sp.accountEnabled
+        SPType                = $sp.servicePrincipalType
+        RiskTier              = "INFO — service principal only"
+    })
+}
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 Write-Host "`n── Summary ──────────────────────────────────────" -ForegroundColor Cyan
