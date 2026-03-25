@@ -13,6 +13,7 @@
 [CmdletBinding()]
 param(
     [string]$ExportPath  = ".\WorkflowAppRegistrations_$(Get-Date -Format 'yyyyMMdd_HHmm').csv",
+    [string]$NamePrefix  = "Workflow",
     [switch]$SkipConnect
 )
 
@@ -32,6 +33,30 @@ function ConvertTo-Array {
     return ,([object[]]@($InputObject))
 }
 
+function Invoke-GraphCollection {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+
+        [hashtable]$Headers
+    )
+
+    $items = [System.Collections.Generic.List[object]]::new()
+    $nextUri = $Uri
+
+    while ($nextUri) {
+        $response = Invoke-MgGraphRequest -Method GET -Uri $nextUri -Headers $Headers
+
+        foreach ($item in (ConvertTo-Array $response.value)) {
+            $items.Add($item)
+        }
+
+        $nextUri = $response.'@odata.nextLink'
+    }
+
+    return ,([object[]]$items.ToArray())
+}
+
 # ── Connect ──────────────────────────────────────────────────────────────────
 if (-not $SkipConnect) {
     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
@@ -40,13 +65,13 @@ if (-not $SkipConnect) {
 }
 
 # ── Retrieve all "Workflow" app registrations ─────────────────────────────────
-Write-Host "Querying app registrations named 'Workflow'..." -ForegroundColor Cyan
+Write-Host "Querying app registrations with names starting '$NamePrefix'..." -ForegroundColor Cyan
 
 # Graph filter — picks up exact match and prefixed variants
-$appsResponse = Invoke-MgGraphRequest -Method GET `
-    -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=startswith(displayName,'Workflow')&`$select=id,appId,displayName,createdDateTime,passwordCredentials,keyCredentials,owners&`$top=999&`$count=true" `
+$escapedPrefix = $NamePrefix.Replace("'", "''")
+$apps = Invoke-GraphCollection `
+    -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=startswith(displayName,'$escapedPrefix')&`$select=id,appId,displayName,createdDateTime,passwordCredentials,keyCredentials&`$top=999" `
     -Headers @{ ConsistencyLevel = "eventual" }
-$apps = ConvertTo-Array $appsResponse.value
 $appCount = $apps.Count
 
 Write-Host "  Found $appCount app registrations." -ForegroundColor Gray
