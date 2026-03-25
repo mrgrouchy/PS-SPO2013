@@ -19,6 +19,19 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function ConvertTo-Array {
+    param(
+        [AllowNull()]
+        [object]$InputObject
+    )
+
+    if ($null -eq $InputObject) {
+        return @()
+    }
+
+    return @($InputObject)
+}
+
 # ── Connect ──────────────────────────────────────────────────────────────────
 if (-not $SkipConnect) {
     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
@@ -30,12 +43,13 @@ if (-not $SkipConnect) {
 Write-Host "Querying app registrations named 'Workflow'..." -ForegroundColor Cyan
 
 # Graph filter — picks up exact match and prefixed variants
-$apps = Invoke-MgGraphRequest -Method GET `
+$appsResponse = Invoke-MgGraphRequest -Method GET `
     -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=startswith(displayName,'Workflow')&`$select=id,appId,displayName,createdDateTime,passwordCredentials,keyCredentials,owners&`$top=999&`$count=true" `
-    -Headers @{ ConsistencyLevel = "eventual" } |
-    Select-Object -ExpandProperty value
+    -Headers @{ ConsistencyLevel = "eventual" }
+$apps = ConvertTo-Array $appsResponse.value
+$appCount = $apps.Count
 
-Write-Host "  Found $($apps.Count) app registrations." -ForegroundColor Gray
+Write-Host "  Found $appCount app registrations." -ForegroundColor Gray
 
 # ── Build results ─────────────────────────────────────────────────────────────
 $now    = Get-Date
@@ -46,12 +60,12 @@ $i = 0
 foreach ($app in $apps) {
     $i++
     Write-Progress -Activity "Processing app registrations" `
-                   -Status "$i / $($apps.Count)  — $($app.displayName)" `
-                   -PercentComplete (($i / $apps.Count) * 100)
+                   -Status "$i / $appCount  — $($app.displayName)" `
+                   -PercentComplete (($i / $appCount) * 100)
 
     # ── Credentials ──────────────────────────────────────────────────────────
-    $secrets = $app.passwordCredentials
-    $certs   = $app.keyCredentials
+    $secrets = ConvertTo-Array $app.passwordCredentials
+    $certs   = ConvertTo-Array $app.keyCredentials
 
     $hasActiveSecret = $secrets | Where-Object {
         $_.endDateTime -and [datetime]$_.endDateTime -gt $now
@@ -82,7 +96,7 @@ foreach ($app in $apps) {
         $ownerResp = Invoke-MgGraphRequest -Method GET `
             -Uri "https://graph.microsoft.com/v1.0/applications/$($app.id)/owners?`$select=id,displayName" `
             -ErrorAction SilentlyContinue
-        $ownerCount = $ownerResp.value.Count
+        $ownerCount = (ConvertTo-Array $ownerResp.value).Count
     } catch { <# tolerate 404 / permission gaps #> }
 
     # ── Service principal ─────────────────────────────────────────────────────
@@ -92,7 +106,7 @@ foreach ($app in $apps) {
         $spResp = Invoke-MgGraphRequest -Method GET `
             -Uri "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '$($app.appId)'&`$select=id,accountEnabled,tags,servicePrincipalType" `
             -ErrorAction SilentlyContinue
-        $sp = $spResp.value | Select-Object -First 1
+        $sp = ConvertTo-Array $spResp.value | Select-Object -First 1
         if ($sp) { $spEnabled = $sp.accountEnabled }
     } catch { <# tolerate #> }
 
@@ -144,7 +158,7 @@ $results | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
 Write-Host "`nExported $($results.Count) records to: $ExportPath" -ForegroundColor Green
 
 # ── High-risk subset to console ───────────────────────────────────────────────
-$highRisk = $results | Where-Object { $_.RiskTier -like "HIGH*" }
+$highRisk = @( $results | Where-Object { $_.RiskTier -like "HIGH*" } )
 if ($highRisk.Count -gt 0) {
     Write-Host "`n── HIGH risk (active creds, no owner) ──────────" -ForegroundColor Red
     $highRisk | Select-Object DisplayName, AppId, CreatedDate, SoonestExpiry |
