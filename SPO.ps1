@@ -26,10 +26,10 @@ function ConvertTo-Array {
     )
 
     if ($null -eq $InputObject) {
-        return @()
+        return ,([object[]]@())
     }
 
-    return @($InputObject)
+    return ,([object[]]@($InputObject))
 }
 
 # ── Connect ──────────────────────────────────────────────────────────────────
@@ -50,6 +50,13 @@ $apps = ConvertTo-Array $appsResponse.value
 $appCount = $apps.Count
 
 Write-Host "  Found $appCount app registrations." -ForegroundColor Gray
+
+if ($appCount -eq 0) {
+    $results = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $results | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
+    Write-Host "No matching app registrations found. Exported an empty CSV to: $ExportPath" -ForegroundColor Yellow
+    return
+}
 
 # ── Build results ─────────────────────────────────────────────────────────────
 $now    = Get-Date
