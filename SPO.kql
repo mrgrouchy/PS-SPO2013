@@ -9,7 +9,6 @@ let workflowServicePrincipalActivity =
     | where TimeGenerated > ago(lookbackDays * 1d)
     | extend NameMatched =
         tostring(ServicePrincipalName) has_any (nameHints)
-        or tostring(AppDisplayName) has_any (nameHints)
     | extend ResourceMatched =
         tostring(ResourceDisplayName) has_any (acsResourceHints)
     | where NameMatched or ResourceMatched
@@ -32,7 +31,6 @@ let workflowServicePrincipalActivity =
       by
         ServicePrincipalId,
         ServicePrincipalName,
-        AppDisplayName,
         AppId
     | extend DaysSinceLastSignIn = datetime_diff("day", now(), LastSignIn)
     | extend ActivityStatus = case(
@@ -57,7 +55,6 @@ workflowServicePrincipalActivity
 | join kind=leftouter workflowDelegated on AppId
 | project
     ServicePrincipalName,
-    AppDisplayName,
     AppId,
     ServicePrincipalId,
     MatchReasons,
