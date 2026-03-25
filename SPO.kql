@@ -1,0 +1,56 @@
+// Workflow app registration activity — ACS and service principal sign-ins
+// Covers both interactive delegation and app-only ACS token issuance
+let lookbackDays = 90;
+let workflowApps = 
+    AADServicePrincipalSignInLogs
+    | where TimeGenerated > ago(lookbackDays * 1d)
+    | where ServicePrincipalName startswith "Workflow" 
+        or ServicePrincipalName == "Workflow"
+    | summarize
+        LastSignIn        = max(TimeGenerated),
+        SignInCount       = count(),
+        UniqueResources   = dcount(ResourceDisplayName),
+        Resources         = make_set(ResourceDisplayName, 10),
+        UniqueIPs         = dcount(IPAddress),
+        ErrorCodes        = make_set(ResultType, 5)
+      by
+        ServicePrincipalId,
+        ServicePrincipalName,
+        AppId
+    | extend DaysSinceLastSignIn = datetime_diff("day", now(), LastSignIn)
+    | extend ActivityStatus = case(
+        DaysSinceLastSignIn <= 30,  "Active — recent",
+        DaysSinceLastSignIn <= 90,  "Active — ageing",
+        DaysSinceLastSignIn <= 180, "Dormant",
+        "Inactive / never seen"
+    );
+// Also check the non-interactive user sign-in logs (delegated flows)
+let workflowDelegated =
+    AADNonInteractiveUserSignInLogs
+    | where TimeGenerated > ago(lookbackDays * 1d)
+    | where AppDisplayName startswith "Workflow"
+        or AppId in (workflowApps | project AppId)
+    | summarize
+        LastDelegatedSignIn = max(TimeGenerated),
+        DelegatedCount      = count(),
+        UniqueUsers         = dcount(UserId)
+      by AppId;
+// Join and emit final result
+workflowApps
+| join kind=leftouter workflowDelegated on AppId
+| project
+    ServicePrincipalName,
+    AppId,
+    ServicePrincipalId,
+    ActivityStatus,
+    DaysSinceLastSignIn,
+    LastSignIn,
+    SignInCount,
+    LastDelegatedSignIn,
+    DelegatedCount,
+    UniqueUsers,
+    UniqueResources,
+    Resources,
+    UniqueIPs,
+    ErrorCodes
+| sort by DaysSinceLastSignIn asc
