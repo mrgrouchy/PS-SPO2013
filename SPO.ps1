@@ -33,6 +33,27 @@ function ConvertTo-Array {
     return ,([object[]]@($InputObject))
 }
 
+function Get-ObjectPropertyValue {
+    param(
+        [AllowNull()]
+        [object]$InputObject,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PropertyName
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+
+    $property = $InputObject.PSObject.Properties[$PropertyName]
+    if ($property) {
+        return $property.Value
+    }
+
+    return $null
+}
+
 function Invoke-GraphCollection {
     param(
         [Parameter(Mandatory = $true)]
@@ -156,9 +177,11 @@ foreach ($app in $apps) {
     # ── Service principal ─────────────────────────────────────────────────────
     $sp = $null
     $spEnabled = $null
+    $spType = $null
     if ($app.appId -and $servicePrincipalByAppId.ContainsKey($app.appId)) {
         $sp = $servicePrincipalByAppId[$app.appId]
-        $spEnabled = $sp.accountEnabled
+        $spEnabled = Get-ObjectPropertyValue -InputObject $sp -PropertyName 'accountEnabled'
+        $spType = Get-ObjectPropertyValue -InputObject $sp -PropertyName 'servicePrincipalType'
     }
 
     # ── Age classification ────────────────────────────────────────────────────
@@ -186,7 +209,7 @@ foreach ($app in $apps) {
         OwnerCount          = $ownerCount
         SPExists            = if ($sp) { $true } else { $false }
         SPEnabled           = $spEnabled
-        SPType              = $sp.servicePrincipalType
+        SPType              = $spType
         RiskTier            = $riskTier
     })
 }
@@ -203,6 +226,9 @@ foreach ($sp in $servicePrincipals) {
         $createdDate = [datetime]$sp.createdDateTime
     }
 
+    $spEnabled = Get-ObjectPropertyValue -InputObject $sp -PropertyName 'accountEnabled'
+    $spType = Get-ObjectPropertyValue -InputObject $sp -PropertyName 'servicePrincipalType'
+
     $results.Add([PSCustomObject]@{
         RecordType            = "ServicePrincipalOnly"
         DisplayName           = $sp.displayName
@@ -215,8 +241,8 @@ foreach ($sp in $servicePrincipals) {
         SoonestExpiry         = ""
         OwnerCount            = ""
         SPExists              = $true
-        SPEnabled             = $sp.accountEnabled
-        SPType                = $sp.servicePrincipalType
+        SPEnabled             = $spEnabled
+        SPType                = $spType
         RiskTier              = "INFO — service principal only"
     })
 }
