@@ -54,6 +54,34 @@ function Get-ObjectPropertyValue {
     return $null
 }
 
+function Get-GraphNextLink {
+    param(
+        [AllowNull()]
+        [object]$ResponseObject
+    )
+
+    if ($null -eq $ResponseObject) {
+        return $null
+    }
+
+    foreach ($propertyName in @('@odata.nextLink', '@odata.nextlink', 'odata.nextLink', 'odata.nextlink', 'NextLink', 'nextLink')) {
+        $propertyValue = Get-ObjectPropertyValue -InputObject $ResponseObject -PropertyName $propertyName
+        if ($propertyValue) {
+            return $propertyValue
+        }
+    }
+
+    if ($ResponseObject -is [System.Collections.IDictionary]) {
+        foreach ($key in @('@odata.nextLink', '@odata.nextlink', 'odata.nextLink', 'odata.nextlink', 'NextLink', 'nextLink')) {
+            if ($ResponseObject.Contains($key) -and $ResponseObject[$key]) {
+                return $ResponseObject[$key]
+            }
+        }
+    }
+
+    return $null
+}
+
 function Invoke-GraphCollection {
     param(
         [Parameter(Mandatory = $true)]
@@ -72,12 +100,7 @@ function Invoke-GraphCollection {
             $items.Add($item)
         }
 
-        $nextLinkProperty = $response.PSObject.Properties['@odata.nextLink']
-        if ($nextLinkProperty) {
-            $nextUri = $nextLinkProperty.Value
-        } else {
-            $nextUri = $null
-        }
+        $nextUri = Get-GraphNextLink -ResponseObject $response
     }
 
     return ,([object[]]$items.ToArray())
